@@ -5,28 +5,31 @@
 #include <unistd.h>
 #include "../libWad/Wad.h"
 
-static int fuse_getattr(const char *path, struct stat *st) {
+//REFERENCES:
+// https://engineering.facile.it/blog/eng/write-filesystem-fuse/
+// https://maastaar.net/fuse/linux/filesystem/c/2019/09/28/writing-less-simple-yet-stupid-filesystem-using-FUSE-in-C/
 
-    Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data);
+static int do_getattr(const char *path, struct stat *st) {
+
+    Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data); 
+
     memset(st, 0, sizeof(struct stat));
 
     if (myWad->isDirectory(path)) {
-        st->st_mode = S_IFDIR | 0777;
-        st->st_nlink = 2;
-        return 0;
+        st->st_mode = S_IFDIR | 0777; 
+        st->st_nlink = 2; 
+    } else if (myWad->isContent(path)) {
+        st->st_mode = S_IFREG | 0777; 
+        st->st_nlink = 1; 
+        st->st_size = myWad->getSize(path); 
+    } else {
+        return -ENOENT; // if the path isn't found
     }
 
-    if (myWad->isContent(path)) {
-        st->st_mode = S_IFREG | 0777;
-        st->st_nlink = 1;
-        st->st_size = myWad->getSize(path);
-        return 0;
-    }
-
-    return -ENOENT;
+    return 0;
 }
 
-static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
+static int do_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
     (void) offset;
     (void) fi;
 
@@ -40,35 +43,45 @@ static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off
     filler(buf, "..", NULL, 0);
 
     std::vector<std::string> entries;
+
     myWad->getDirectory(path, &entries);
-    for (const std::string &entry : entries) {
+
+    for (const std::string &entry : entries) { //for each entry
         if (filler(buf, entry.c_str(), NULL, 0) != 0) {
             return 0;
         }
     }
+
     return 0;
 }
 
-static int fuse_open(const char *path, struct fuse_file_info *fi) {
+static int do_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data);
 
-    // Check if the file exists in the WAD archive
-    if (!myWad->isContent(path)) {
+    int value = myWad->getContents(path, buf, size, offset);
+
+    if (value == -1) {
         return -ENOENT;
+    } 
+    else {
+        return value;
+    }
+}
+
+//for making directories
+static int do_mkdir(const char *path, mode_t mode) {
+    Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data);
+
+    if (myWad->isDirectory(path)) { //change to isDirectory, ernesto said in discussion
+        return -EEXIST;
     }
 
+    myWad->createDirectory(path);
+
     return 0;
 }
 
-static int fuse_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data);
-
-    int returnVal = myWad->getContents(path, buf, size, offset);
-
-    return returnVal == -1 ?  -ENOENT : returnVal;
-}
-
-static int fuse_mknod(const char *path, mode_t mode, dev_t rdev) {
+static int do_mknod(const char *path, mode_t mode, dev_t rdev) {
     Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data);
 
     if (!S_ISREG(mode)) {
@@ -80,41 +93,41 @@ static int fuse_mknod(const char *path, mode_t mode, dev_t rdev) {
     }
 
     myWad->createFile(path);
+
     return 0;
 }
 
-static int fuse_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+//for writing to file
+static int do_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data);
 
     if (!myWad->isContent(path)) {
         return -EEXIST;
     }
 
-    int returnVal = myWad->writeToFile(path, buf, size, offset);
-    return returnVal;
+    int value = myWad->writeToFile(path, buf, size, offset);
+
+    return value;
 }
 
-static int fuse_mkdir(const char *path, mode_t mode) {
-    Wad* myWad = static_cast<Wad*>(fuse_get_context()->private_data);
-
-    if (myWad->isDirectory(path)) {
-        return -EEXIST;
-    }
-
-    myWad->createDirectory(path);
-    return 0;
-}
-
+//taken from:
+//https://maastaar.net/fuse/linux/filesystem/c/2019/09/28/writing-less-simple-yet-stupid-filesystem-using-FUSE-in-C/
+//structure for fuse operations MUST BE IN ORDER!!!!
 static struct fuse_operations operations = {
-    .getattr = fuse_getattr,
-    .mknod = fuse_mknod,
-    .mkdir = fuse_mkdir,
-    .open = fuse_open,
-    .read = fuse_read,
-    .write = fuse_write,
-    .readdir = fuse_readdir,
+    .getattr = do_getattr,
+    .readdir = do_readdir,
+    .read = do_read,
+    .mkdir = do_mkdir,
+    .mknod = do_mknod,
+    .write = do_write,
 };
 
+// int main( int argc, char *argv[] )
+// {
+// 	return fuse_main( argc, argv, &operations, NULL );
+// }
+
+//provided from Ernesto discussion
 int main(int argc, char *argv[]) {
     if (argc < 3) {
         std::cout << "Not enough arguments provided." << std::endl;
@@ -131,8 +144,9 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    argv[argc - 2] = argv[argc - 1]; // Adjust argument for mount point
+    argv[argc - 2] = argv[argc - 1];
     argc--;
 
+    // ((Wad*) fuse_get_context()->private_data)->getContents;
     return fuse_main(argc, argv, &operations, myWad);
 }
