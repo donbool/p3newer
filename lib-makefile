@@ -1,0 +1,15 @@
+CC=g++
+AR=ar
+CFLAGS=-c -std=c++17
+
+# Target for the library
+libWad.a: Wad.o
+	$(AR) cr libWad.a Wad.o
+
+# Compile Wad.cpp into Wad.o
+Wad.o: Wad.cpp Wad.h
+	$(CC) $(CFLAGS) Wad.cpp
+
+# Clean rule to remove compiled files
+clean:
+	rm -f Wad.o libWad.a
